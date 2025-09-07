@@ -1,0 +1,850 @@
+import React, { useEffect, useRef, useState } from "react";
+
+/**
+ * Digital Pets + Goals (Hearts) + Flashcards (Daily Memorize Progress)
+ * + Memories (photos/videos) + Notes (text/PDF/images)
+ * - Notes can be opened directly inside Flashcards via 📓 button
+ */
+
+/* -------------------- Utils -------------------- */
+const clamp = (v, min, max) => Math.min(Math.max(v, min), max);
+const rand = (a, b) => a + Math.random() * (b - a);
+const todayStr = () => new Date().toISOString().slice(0, 10);
+const uuid = () =>
+(crypto?.randomUUID?.() ||
+  ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, c =>
+    (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16)
+  ));
+
+function stepToward(pos, target, speed, dt) {
+  const dx = target.x - pos.x;
+  const dy = target.y - pos.y;
+  const dist = Math.hypot(dx, dy) || 1;
+  const step = Math.min(dist, speed * dt);
+  return { x: pos.x + (dx / dist) * step, y: pos.y + (dy / dist) * step, step };
+}
+
+// Minimal useLocalStorage hook (MIT-style)
+function useLocalStorage(key, initialValue) {
+  const [value, setValue] = useState(() => {
+    try {
+      const item = window.localStorage.getItem(key);
+      return item != null ? JSON.parse(item) : initialValue;
+    } catch {
+      return initialValue;
+    }
+  });
+  useEffect(() => {
+    try { window.localStorage.setItem(key, JSON.stringify(value)); } catch { }
+  }, [key, value]);
+  return [value, setValue];
+}
+
+// Hearts from goals (10 hearts = 100%)
+function computeHeartsFromGoals(goals = []) {
+  if (!goals.length) return 0;
+  const done = goals.filter(g => g.done).length;
+  return Math.floor((done / goals.length) * 10);
+}
+
+/* -------------------- Species helpers -------------------- */
+const SPECIES = ["cat", "dog", "panda", "fish", "fox", "bunny", "duck", "turtle"];
+const speciesAvatar = sp => (
+  { cat: "🐱", dog: "🐶", panda: "🐼", fish: "🐟", fox: "🦊", bunny: "🐰", duck: "🦆", turtle: "🐢" }[sp] || "🐾"
+);
+const prettySpecies = sp => sp.charAt(0).toUpperCase() + sp.slice(1);
+
+/* -------------------- Sprites (simple SVGs) -------------------- */
+function CatSVG({ facingLeft, bob }) { const sx = facingLeft ? -1 : 1; return (<svg viewBox="0 0 64 48" className="w-14 h-10 select-none pointer-events-none" style={{ transform: `scaleX(${sx}) translateZ(0)` }} aria-label="cat"><rect x="10" y="20" width="36" height="16" rx="4" fill="#c6a48b" /><rect x="38" y="12" width="16" height="14" rx="3" fill="#c6a48b" /><polygon points="40,12 44,6 48,12" fill="#c6a48b" style={{ transform: `translateY(${bob ? 0 : 1}px)` }} /><polygon points="50,12 54,6 58,12" fill="#c6a48b" style={{ transform: `translateY(${bob ? 1 : 0}px)` }} /><circle cx="44" cy="18" r="1.5" fill="#1d1d1f" /><circle cx="52" cy="18" r="1.5" fill="#1d1d1f" /><rect x="47.5" y="20" width="2" height="1.5" fill="#7b4d35" /><rect x="14" y="36" width="6" height="6" rx="1" fill="#9b7c67" style={{ transform: `translateY(${bob ? 0 : 1}px)` }} /><rect x="26" y="36" width="6" height="6" rx="1" fill="#9b7c67" style={{ transform: `translateY(${bob ? 1 : 0}px)` }} /><rect x="38" y="36" width="6" height="6" rx="1" fill="#9b7c67" style={{ transform: `translateY(${bob ? 0 : 1}px)` }} /><path d={`M 10 26 C 2 ${bob ? 16 : 18}, 2 ${bob ? 6 : 8}, 12 10`} stroke="#c6a48b" strokeWidth="6" fill="none" strokeLinecap="round" /><path d="M40 20 H34 M40 22 H33 M56 20 H62 M56 22 H63" stroke="#7b4d35" strokeWidth="1.5" /></svg>); }
+function DogSVG({ facingLeft, bob }) { const sx = facingLeft ? -1 : 1; return (<svg viewBox="0 0 64 48" className="w-14 h-10 select-none pointer-events-none" style={{ transform: `scaleX(${sx}) translateZ(0)` }} aria-label="dog"><rect x="10" y="20" width="38" height="16" rx="6" fill="#c4a484" /><rect x="40" y="14" width="14" height="12" rx="4" fill="#c4a484" /><rect x="42" y="10" width="6" height="6" rx="2" fill="#8b6b4c" style={{ transform: `translateY(${bob ? 0 : 1}px)` }} /><rect x="51" y="18" width="4" height="3" rx="1.5" fill="#333" /><circle cx="47" cy="19" r="1.4" fill="#1d1d1f" /><rect x="16" y="36" width="6" height="6" rx="2" fill="#ad8c6e" style={{ transform: `translateY(${bob ? 0 : 1}px)` }} /><rect x="28" y="36" width="6" height="6" rx="2" fill="#ad8c6e" style={{ transform: `translateY(${bob ? 1 : 0}px)` }} /><path d={`M 10 26 C 2 ${bob ? 18 : 20}, 2 ${bob ? 10 : 12}, 12 12`} stroke="#c4a484" strokeWidth="6" fill="none" strokeLinecap="round" /></svg>); }
+function PandaSVG({ facingLeft, bob }) { const sx = facingLeft ? -1 : 1; return (<svg viewBox="0 0 64 48" className="w-14 h-10 select-none pointer-events-none" style={{ transform: `scaleX(${sx}) translateZ(0)` }} aria-label="panda"><rect x="12" y="20" width="36" height="16" rx="6" fill="#f6f7f8" stroke="#222" strokeWidth="1" /><rect x="38" y="12" width="16" height="14" rx="4" fill="#f6f7f8" stroke="#222" strokeWidth="1" /><circle cx="40" cy="12" r="4" fill="#222" style={{ transform: `translateY(${bob ? 0 : 1}px)` }} /><circle cx="54" cy="12" r="4" fill="#222" style={{ transform: `translateY(${bob ? 1 : 0}px)` }} /><ellipse cx="44" cy="18" rx="3" ry="2.3" fill="#222" /><ellipse cx="52" cy="18" rx="3" ry="2.3" fill="#222" /><circle cx="44" cy="18" r="1" fill="#fff" /><circle cx="52" cy="18" r="1" fill="#fff" /><rect x="47" y="20" width="3" height="2" rx="1" fill="#222" /><rect x="16" y="36" width="6" height="6" rx="2" fill="#222" style={{ opacity: .75, transform: `translateY(${bob ? 0 : 1}px)` }} /><rect x="28" y="36" width="6" height="6" rx="2" fill="#222" style={{ opacity: .75, transform: `translateY(${bob ? 1 : 0}px)` }} /><circle cx="12" cy="28" r="3" fill="#222" /></svg>); }
+function FishSVG({ facingLeft, bob }) { const sx = facingLeft ? -1 : 1; return (<svg viewBox="0 0 64 48" className="w-14 h-10 select-none pointer-events-none" style={{ transform: `scaleX(${sx}) translateZ(0)` }} aria-label="fish"><ellipse cx="28" cy="26" rx="16" ry="10" fill="#5cc0ff" /><polygon points="12,26 4,20 4,32" fill="#49a7e6" style={{ transform: `translateX(${bob ? 0 : 1}px)` }} /><circle cx="36" cy="24" r="2" fill="#0b2533" /><polygon points="24,18 18,12 28,16" fill="#79d2ff" /><polygon points="30,34 24,38 34,34" fill="#79d2ff" /></svg>); }
+function FoxSVG({ facingLeft, bob }) { const sx = facingLeft ? -1 : 1; return (<svg viewBox="0 0 64 48" className="w-14 h-10 select-none" style={{ transform: `scaleX(${sx})` }} aria-label="fox"><rect x="12" y="20" width="36" height="16" rx="5" fill="#f97316" /><rect x="38" y="12" width="16" height="14" rx="4" fill="#f97316" /><polygon points="40,12 44,6 48,12" fill="#f97316" style={{ transform: `translateY(${bob ? 0 : 1}px)` }} /><polygon points="50,12 54,6 58,12" fill="#f97316" style={{ transform: `translateY(${bob ? 1 : 0}px)` }} /><rect x="42" y="16" width="12" height="6" rx="2" fill="#fff" /><circle cx="44" cy="18" r="1.2" fill="#111" /><circle cx="52" cy="18" r="1.2" fill="#111" /><path d={`M 10 28 c 0 0 -6 ${bob ? 0 : 2} -6 6 s 10 6 12 6`} stroke="#f97316" strokeWidth="6" fill="none" strokeLinecap="round" /></svg>); }
+function BunnySVG({ facingLeft, bob }) { const sx = facingLeft ? -1 : 1; return (<svg viewBox="0 0 64 48" className="w-14 h-10 select-none" style={{ transform: `scaleX(${sx})` }} aria-label="bunny"><rect x="12" y="22" width="34" height="14" rx="7" fill="#f4f4f5" /><rect x="38" y="12" width="14" height="12" rx="6" fill="#f4f4f5" /><rect x="40" y="4" width="4" height="12" rx="2" fill="#e5e7eb" style={{ transform: `translateY(${bob ? 0 : 1}px)` }} /><rect x="48" y="4" width="4" height="12" rx="2" fill="#e5e7eb" style={{ transform: `translateY(${bob ? 1 : 0}px)` }} /><circle cx="44" cy="18" r="1.1" fill="#111" /><circle cx="50" cy="18" r="1.1" fill="#111" /><rect x="46.5" y="20" width="2" height="1.5" rx="0.6" fill="#d4d4d8" /><circle cx="12" cy="30" r="3" fill="#e5e7eb" /></svg>); }
+function DuckSVG({ facingLeft, bob }) { const sx = facingLeft ? -1 : 1; return (<svg viewBox="0 0 64 48" className="w-14 h-10 select-none" style={{ transform: `scaleX(${sx})` }} aria-label="duck"><ellipse cx="28" cy="28" rx="16" ry="10" fill="#fde047" /><rect x="38" y="22" width="10" height="6" rx="3" fill="#f97316" /><circle cx="46" cy="22" r="2" fill="#f97316" /><circle cx="36" cy="24" r="1.6" fill="#111" /><polygon points="12,28 6,24 6,32" fill="#fde047" style={{ transform: `translateX(${bob ? 0 : 1}px)` }} /></svg>); }
+function TurtleSVG({ facingLeft, bob }) { const sx = facingLeft ? -1 : 1; return (<svg viewBox="0 0 64 48" className="w-14 h-10 select-none" style={{ transform: `scaleX(${sx})` }} aria-label="turtle"><ellipse cx="28" cy="28" rx="16" ry="11" fill="#10b981" /><rect x="12" y="28" width="6" height="6" rx="2" fill="#065f46" style={{ transform: `translateY(${bob ? 0 : 1}px)` }} /><rect x="22" y="36" width="6" height="6" rx="2" fill="#065f46" style={{ transform: `translateY(${bob ? 1 : 0}px)` }} /><rect x="34" y="36" width="6" height="6" rx="2" fill="#065f46" style={{ transform: `translateY(${bob ? 0 : 1}px)` }} /><rect x="40" y="24" width="10" height="8" rx="3" fill="#10b981" /><circle cx="50" cy="27" r="1.4" fill="#111" /></svg>); }
+function PetSVG({ species = "cat", facingLeft, bob }) {
+  switch (species) {
+    case "dog": return <DogSVG facingLeft={facingLeft} bob={bob} />;
+    case "panda": return <PandaSVG facingLeft={facingLeft} bob={bob} />;
+    case "fish": return <FishSVG facingLeft={facingLeft} bob={bob} />;
+    case "fox": return <FoxSVG facingLeft={facingLeft} bob={bob} />;
+    case "bunny": return <BunnySVG facingLeft={facingLeft} bob={bob} />;
+    case "duck": return <DuckSVG facingLeft={facingLeft} bob={bob} />;
+    case "turtle": return <TurtleSVG facingLeft={facingLeft} bob={bob} />;
+    default: return <CatSVG facingLeft={facingLeft} bob={bob} />;
+  }
+}
+
+/* -------------------- Small UI pieces -------------------- */
+function TopBar({ onToggleInfo, onNewPet, pets, activeId, onSwitch, onManage }) {
+  return (
+    <div className="flex items-center justify-between px-3 h-10 bg-zinc-800 text-zinc-200 border-b border-zinc-700">
+      <div className="flex items-center gap-2">
+        <span className="text-xs tracking-widest">VS CODE PETS</span>
+      </div>
+      <div className="flex items-center gap-3 opacity-90">
+        <select
+          className="bg-zinc-900 text-zinc-100 border border-zinc-700 rounded px-2 py-1 text-xs"
+          value={activeId}
+          onChange={(e) => onSwitch(e.target.value)}
+          title="Switch pet"
+        >
+          {pets.map(p => (
+            <option key={p.id} value={p.id}>{`${speciesAvatar(p.species)} ${p.name}`}</option>
+          ))}
+        </select>
+        <button type="button" className="hover:opacity-100" title="Manage" onClick={onManage}>⚙️ Manage</button>
+        <button type="button" className="hover:opacity-100" title="Add Pet" onClick={onNewPet}>＋ Add Pet</button>
+        <button type="button" className="hover:opacity-100" title="Info" onClick={onToggleInfo}>ℹ️</button>
+      </div>
+    </div>
+  );
+}
+function HeartRow({ hearts, max = 10 }) {
+  const full = Math.max(0, Math.min(max, Math.round(hearts)));
+  return (
+    <div className="flex gap-1 text-[18px] leading-none">
+      {Array.from({ length: max }).map((_, i) => (
+        <span key={i} className={i < full ? "text-rose-500" : "text-zinc-400/60"}>❤</span>
+      ))}
+    </div>
+  );
+}
+function Row({ icon, label, value, children }) {
+  return (
+    <div className="flex items-center justify-between py-2">
+      <div className="flex items-center gap-2">
+        <span className="text-lg">{icon}</span>
+        <span className="text-sm text-zinc-600">{label}</span>
+      </div>
+      <div className="text-sm text-zinc-900">{value ?? children}</div>
+    </div>
+  );
+}
+
+// === Non-interactive hotspot label (visual hint only) ==================
+function HotspotLabel({ cfg, text, offsetPx = 12 }) {
+  return (
+    <div
+      className="absolute pointer-events-none select-none z-[6]"
+      style={{
+        left: `${cfg.cx}%`,
+        top: `${cfg.cy}%`,
+        // position the pill a bit above the hotspot center
+        transform: `translate(-50%, calc(-50% - ${offsetPx}px))`,
+      }}
+      aria-hidden="true"
+    >
+      <span className="bg-black/70 text-white text-[10px] px-2 py-0.5 rounded-full shadow">
+        {text}
+      </span>
+    </div>
+  );
+}
+
+/* -------------------- Info Panel -------------------- */
+function InfoPanel({ open, onClose, pet, setPet, extra, setExtra, onOpenGoals, onOpenMemories, onPlay }) {
+  const [k, setK] = useState(""); const [v, setV] = useState("");
+  const addField = () => { if (!k) return; setExtra({ ...extra, [k]: v }); setK(""); setV(""); };
+  if (!open) return null;
+
+  const heartsFromGoals = computeHeartsFromGoals(pet.goals || []);
+  const today = todayStr();
+  const dailyPct = pet.memDate === today ? Math.round(pet.energy ?? 0) : 0;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
+      <div className="relative rounded-3xl bg-white/95 backdrop-blur shadow-2xl border border-zinc-200 w-[480px] max-w-[92vw] p-5 text-zinc-900">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-full bg-zinc-100 flex items-center justify-center">{speciesAvatar(pet.species)}</div>
+            <input value={pet.name} onChange={(e) => setPet({ ...pet, name: e.target.value })} className="text-sm font-medium px-2 py-1 rounded-full bg-zinc-100 text-zinc-900 placeholder-zinc-500 border border-transparent focus:border-zinc-300" />
+          </div>
+          <button type="button" onClick={onClose} className="text-zinc-500 hover:text-zinc-700">✕</button>
+        </div>
+
+        <div className="mb-4"><HeartRow hearts={heartsFromGoals} /></div>
+
+        <div className="flex gap-2 mb-4">
+          <button type="button" onClick={onOpenGoals} className="px-3 py-1.5 rounded-full bg-rose-100 text-rose-600 text-sm">🎯 Goals</button>
+          <button type="button" onClick={onOpenMemories} className="px-3 py-1.5 rounded-full bg-indigo-100 text-indigo-700 text-sm">🎞️ Memories</button>
+          <button type="button" onClick={onPlay} className="px-3 py-1.5 rounded-full bg-amber-100 text-amber-700 text-sm">⭐ Play</button>
+        </div>
+
+        <div className="divide-y divide-zinc-200">
+          <Row icon="🐾" label="Species" value={prettySpecies(pet.species)} />
+          <Row icon="⏳" label="Age" value={`${Math.max(0, Math.floor((Date.now() - pet.createdAt) / 60000))} min`} />
+          <Row icon="⚖️" label="Weight">
+            <div className="flex items-center">
+              <input type="number" step="0.1" value={pet.weight} onChange={(e) => setPet({ ...pet, weight: Number(e.target.value) || 0 })} className="w-24 text-sm px-2 py-1 rounded border border-zinc-300 text-zinc-900 placeholder-zinc-500" />
+              <span className="ml-1 text-xs text-zinc-500">lbs</span>
+            </div>
+          </Row>
+          <Row icon="⚡" label="Daily Memorize Progress" value={`${dailyPct}%`} />
+          <Row icon="🌀" label="Scrolled Together" value={`${(pet.distanceKm ?? 0).toFixed(2)} km`} />
+          {Object.entries(extra).map(([key, val]) => (
+            <Row key={key} icon="📝" label={key} value={String(val)} />
+          ))}
+        </div>
+
+        <div className="mt-4">
+          <div className="text-sm text-zinc-600 mb-1">Add field</div>
+          <div className="grid grid-cols-2 gap-2">
+            <input value={k} onChange={(e) => setK(e.target.value)} placeholder="Label" className="col-span-1 text-sm px-2 py-2 rounded border border-zinc-300 w-full text-zinc-900 placeholder-zinc-500" />
+            <input value={v} onChange={(e) => setV(e.target.value)} placeholder="Value" className="col-span-1 text-sm px-2 py-2 rounded border border-zinc-300 w-full text-zinc-900 placeholder-zinc-500" />
+          </div>
+          <div className="mt-2 flex justify-end">
+            <button type="button" onClick={addField} className="px-4 py-2 rounded bg-zinc-900 text-white text-sm">Add</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* -------------------- Goals Panel -------------------- */
+function GoalsPanel({ open, onClose, pet, setPet }) {
+  const [text, setText] = useState("");
+  const goals = pet.goals || [];
+  const addGoal = () => {
+    const t = text.trim(); if (!t) return;
+    const next = [...goals, { id: uuid(), text: t, done: false }];
+    setPet({ ...pet, goals: next, hearts: computeHeartsFromGoals(next) });
+    setText("");
+  };
+  const toggle = id => {
+    const next = goals.map(g => g.id === id ? { ...g, done: !g.done } : g);
+    setPet({ ...pet, goals: next, hearts: computeHeartsFromGoals(next) });
+  };
+  const remove = id => {
+    const next = goals.filter(g => g.id !== id);
+    setPet({ ...pet, goals: next, hearts: computeHeartsFromGoals(next) });
+  };
+  if (!open) return null;
+  const hearts = computeHeartsFromGoals(goals);
+  const percent = goals.length ? Math.round((hearts / 10) * 100) : 0;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div className="relative w-[560px] max-w-[96vw] rounded-3xl bg-white text-zinc-900 p-6 shadow-2xl border border-zinc-200">
+        <div className="flex items-center justify-between mb-4">
+          <div className="text-base font-semibold">🎯 Goals for {pet.name}</div>
+          <button type="button" className="text-zinc-500 hover:text-zinc-700" onClick={onClose}>✕</button>
+        </div>
+
+        <div className="mb-4">
+          <div className="text-sm text-zinc-600">Progress: {percent}% · Hearts shown: {hearts}/10</div>
+          <div className="h-2 w-full bg-zinc-200 rounded mt-1 overflow-hidden">
+            <div className="h-full bg-amber-500" style={{ width: `${percent}%` }} />
+          </div>
+        </div>
+
+        <div className="flex gap-2 mb-3">
+          <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Add a goal" className="flex-1 px-3 py-2 rounded border border-zinc-300 text-zinc-900 placeholder-zinc-500" />
+          <button type="button" onClick={addGoal} className="px-4 py-2 rounded bg-zinc-900 text-white text-sm">Add</button>
+        </div>
+
+        <div className="space-y-2 max-h-[50vh] overflow-auto pr-1">
+          {goals.length === 0 && <div className="text-sm text-zinc-500">No goals yet. Add one above.</div>}
+          {goals.map(g => (
+            <div key={g.id} className="flex items-center justify-between rounded-xl border border-zinc-200 bg-white/70 px-3 py-2">
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input type="checkbox" checked={!!g.done} onChange={() => toggle(g.id)} />
+                <span className={g.done ? "line-through text-zinc-400" : ""}>{g.text}</span>
+              </label>
+              <button type="button" onClick={() => remove(g.id)} className="text-rose-600 hover:text-rose-700 text-sm">Delete</button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* -------------------- Memories via IndexedDB -------------------- */
+const MEM_DB = "petMemoriesDB"; const MEM_STORE = "media";
+function openMemDB() { return new Promise((resolve, reject) => { const req = indexedDB.open(MEM_DB, 1); req.onupgradeneeded = () => { const db = req.result; const s = db.createObjectStore(MEM_STORE, { keyPath: "id" }); s.createIndex("petId", "petId", { unique: false }); s.createIndex("createdAt", "createdAt", { unique: false }); }; req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error); }); }
+async function memAdd(petId, file) { const db = await openMemDB(); const tx = db.transaction(MEM_STORE, "readwrite"); const rec = { id: uuid(), petId, name: file.name, type: file.type, size: file.size, createdAt: Date.now(), blob: file }; tx.objectStore(MEM_STORE).put(rec); await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = () => rej(tx.error); }); db.close?.(); return rec.id; }
+async function memListByPet(petId) { const db = await openMemDB(); const tx = db.transaction(MEM_STORE, "readonly"); const idx = tx.objectStore(MEM_STORE).index("petId"); const items = []; return new Promise((resolve, reject) => { const req = idx.openCursor(IDBKeyRange.only(petId), "prev"); req.onsuccess = () => { const cur = req.result; if (!cur) { db.close?.(); resolve(items); return; } items.push(cur.value); cur.continue(); }; req.onerror = () => { db.close?.(); reject(req.error); }; }); }
+async function memDelete(id) { const db = await openMemDB(); const tx = db.transaction(MEM_STORE, "readwrite"); tx.objectStore(MEM_STORE).delete(id); await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = () => rej(tx.error); }); db.close?.(); }
+function MemoriesPanel({ open, onClose, pet }) {
+  const [items, setItems] = useState([]); const [viewer, setViewer] = useState(null); const urlsRef = useRef([]);
+  const buildURLs = list => { urlsRef.current.forEach(u => URL.revokeObjectURL(u)); urlsRef.current = []; return list.map(it => { const url = URL.createObjectURL(it.blob); urlsRef.current.push(url); return { ...it, url, isVideo: it.type.startsWith("video/") }; }); };
+  const refresh = async () => { const list = await memListByPet(pet.id); setItems(buildURLs(list)); };
+  useEffect(() => { if (open && pet?.id) refresh(); }, [open, pet?.id]);
+  useEffect(() => () => { urlsRef.current.forEach(u => URL.revokeObjectURL(u)); }, []);
+  if (!open) return null;
+  const onUpload = async e => { const files = Array.from(e.target.files || []); for (const f of files) await memAdd(pet.id, f); e.target.value = ""; refresh(); };
+  const onDelete = async id => { await memDelete(id); refresh(); };
+  const startSlideShow = (i = 0) => setViewer(i); const closeSlide = () => setViewer(null);
+  const next = () => setViewer(v => (v + 1) % items.length); const prev = () => setViewer(v => (v - 1 + items.length) % items.length);
+  return (<div className="fixed inset-0 z-[60] flex items-center justify-center">
+    <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+    <div className="relative w=[880px] max-w-[96vw] rounded-3xl bg-white text-zinc-900 p-6 shadow-2xl border border-zinc-200 w-[880px]">
+      <div className="flex items-center justify-between mb-4">
+        <div className="text-base font-semibold">🎞️ Memories · {pet.name}</div>
+        <button type="button" className="text-zinc-500 hover:text-zinc-700" onClick={onClose}>✕</button>
+      </div>
+      <div className="flex items-center gap-2 mb-4">
+        <input type="file" multiple accept="image/*,video/*" onChange={onUpload} />
+        <button type="button" onClick={() => items.length && startSlideShow(0)} className="px-3 py-2 rounded bg-zinc-900 text-white text-sm disabled:opacity-50" disabled={!items.length}>▶️ Start Slideshow</button>
+        <div className="text-xs text-zinc-600">{items.length} item{items.length !== 1 ? "s" : ""}</div>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 max-h-[50vh] overflow-auto pr-1">
+        {items.map((it, i) => (
+          <div key={it.id} className="group relative rounded-xl overflow-hidden border border-zinc-200 bg-zinc-50">
+            {it.isVideo ? <video src={it.url} muted playsInline className="w-full h-32 object-cover" /> : <img src={it.url} alt={it.name} className="w-full h-32 object-cover" />}
+            <div className="absolute inset-x-0 bottom-0 bg-black/40 text-white text-xs px-2 py-1 truncate">{it.name}</div>
+            <div className="absolute top-1 right-1 flex gap-1 opacity-0 group-hover:opacity-100 transition">
+              <button type="button" onClick={() => startSlideShow(i)} className="px-2 py-1 rounded bg-black/70 text-white text-xs">View</button>
+              <button type="button" onClick={() => onDelete(it.id)} className="px-2 py-1 rounded bg-rose-600 text-white text-xs">Delete</button>
+            </div>
+          </div>
+        ))}
+        {!items.length && <div className="col-span-full text-sm text-zinc-500">No memories yet. Use the file picker above to add photos or videos.</div>}
+      </div>
+    </div>
+    {viewer != null && items[viewer] && (
+      <div className="absolute inset-0 z-[70] flex items-center justify-center bg-black/80">
+        <button className="absolute top-4 right-4 text-white text-2xl" onClick={closeSlide}>✕</button>
+        <button className="absolute left-4 text-white text-2xl" onClick={prev}>‹</button>
+        <button className="absolute right-4 text-white text-2xl" onClick={next}>›</button>
+        <div className="max-w-[92vw] max-h-[86vh]">
+          {items[viewer].isVideo
+            ? <video src={items[viewer].url} controls autoPlay className="max-h-[86vh] max-w-[92vw]" />
+            : <img src={items[viewer].url} alt="" className="max-h-[86vh] max-w-[92vw] object-contain" />}
+        </div>
+      </div>
+    )}
+  </div>);
+}
+
+/* -------------------- Notes via IndexedDB (per-pet) -------------------- */
+const NOTES_DB = "petNotesDB";
+const NOTES_STORE = "notes";
+
+function openNotesDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(NOTES_DB, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      const s = db.createObjectStore(NOTES_STORE, { keyPath: "id" });
+      s.createIndex("petId", "petId", { unique: false });
+      s.createIndex("createdAt", "createdAt", { unique: false });
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function notesAdd(petId, file) {
+  const db = await openNotesDB();
+  const tx = db.transaction(NOTES_STORE, "readwrite");
+  const rec = { id: uuid(), petId, name: file.name, type: file.type, size: file.size, createdAt: Date.now(), blob: file };
+  tx.objectStore(NOTES_STORE).put(rec);
+  await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+  db.close?.();
+  return rec.id;
+}
+async function notesListByPet(petId) {
+  const db = await openNotesDB();
+  const tx = db.transaction(NOTES_STORE, "readonly");
+  const idx = tx.objectStore(NOTES_STORE).index("petId");
+  const out = [];
+  return new Promise((resolve, reject) => {
+    const req = idx.openCursor(IDBKeyRange.only(petId), "prev");
+    req.onsuccess = () => {
+      const cur = req.result;
+      if (!cur) { db.close?.(); resolve(out); return; }
+      out.push(cur.value);
+      cur.continue();
+    };
+    req.onerror = () => { db.close?.(); reject(req.error); };
+  });
+}
+async function notesDelete(id) {
+  const db = await openNotesDB();
+  const tx = db.transaction(NOTES_STORE, "readwrite");
+  tx.objectStore(NOTES_STORE).delete(id);
+  await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+  db.close?.();
+}
+function NotesPanel({ open, onClose, pet }) {
+  const [items, setItems] = useState([]);
+  const [viewer, setViewer] = useState(null);
+  const [viewerText, setViewerText] = useState("");
+  const urlsRef = useRef([]);
+
+  const buildURLs = (list) => {
+    urlsRef.current.forEach(u => URL.revokeObjectURL(u));
+    urlsRef.current = [];
+    return list.map(it => {
+      const isText = it.type.startsWith("text/") || /\.md$/i.test(it.name) || /\.txt$/i.test(it.name);
+      const isPDF = it.type === "application/pdf" || /\.pdf$/i.test(it.name);
+      const isImg = it.type.startsWith("image/");
+      const url = !isText ? URL.createObjectURL(it.blob) : null;
+      if (url) urlsRef.current.push(url);
+      return { ...it, url, isText, isPDF, isImg };
+    });
+  };
+
+  const refresh = async () => {
+    const list = await notesListByPet(pet.id);
+    setItems(buildURLs(list));
+  };
+
+  useEffect(() => { if (open && pet?.id) refresh(); }, [open, pet?.id]);
+  useEffect(() => () => { urlsRef.current.forEach(u => URL.revokeObjectURL(u)); }, []);
+
+  if (!open) return null;
+
+  const onUpload = async (e) => {
+    const files = Array.from(e.target.files || []);
+    for (const f of files) await notesAdd(pet.id, f);
+    e.target.value = "";
+    refresh();
+  };
+
+  const openViewer = async (it) => {
+    setViewer(it);
+    setViewerText("");
+    if (it.isText) {
+      const text = await it.blob.text();
+      setViewerText(text);
+    }
+  };
+
+  const closeViewer = () => { setViewer(null); setViewerText(""); };
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div className="relative w-[900px] max-w-[96vw] rounded-3xl bg-white text-zinc-900 p-6 shadow-2xl border border-zinc-200">
+        <div className="flex items-center justify-between mb-4">
+          <div className="text-base font-semibold">📓 Notes · {pet.name}</div>
+          <button type="button" className="text-zinc-500 hover:text-zinc-700" onClick={onClose}>✕</button>
+        </div>
+
+        <div className="flex items-center gap-2 mb-4">
+          <input type="file" multiple accept=".txt,.md,application/pdf,image/*" onChange={onUpload} />
+          <div className="text-xs text-zinc-600">{items.length} note{items.length !== 1 ? "s" : ""}</div>
+        </div>
+
+        <div className="grid grid-cols-12 gap-4">
+          {/* List */}
+          <div className="col-span-12 md:col-span-5 max-h-[60vh] overflow-auto pr-1">
+            {items.length === 0 && <div className="text-sm text-zinc-500">No notes yet. Upload text/markdown, PDFs, or images.</div>}
+            <div className="space-y-2">
+              {items.map(it => (
+                <div key={it.id} className="flex items-center justify-between rounded-xl border border-zinc-200 bg-white/70 px-3 py-2">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm">{it.name}</div>
+                    <div className="text-[11px] text-zinc-500">{new Date(it.createdAt).toLocaleString()}</div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button className="px-2 py-1 rounded bg-zinc-900 text-white text-xs" onClick={() => openViewer(it)}>View</button>
+                    <button className="px-2 py-1 rounded bg-rose-600 text-white text-xs" onClick={async () => { await notesDelete(it.id); refresh(); }}>Delete</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Viewer */}
+          <div className="col-span-12 md:col-span-7">
+            {!viewer && <div className="text-sm text-zinc-500">Select a note to preview.</div>}
+            {viewer && (
+              <div className="rounded-xl border border-zinc-200 overflow-hidden bg-zinc-50">
+                <div className="flex items-center justify-between px-3 py-2 bg-white border-b border-zinc-200">
+                  <div className="text-sm font-medium truncate">{viewer.name}</div>
+                  <button className="text-xs text-zinc-500 hover:text-zinc-700" onClick={closeViewer}>Close</button>
+                </div>
+                <div className="max-h-[60vh] overflow-auto">
+                  {viewer.isText && (
+                    <pre className="whitespace-pre-wrap p-4 text-sm text-zinc-800">{viewerText}</pre>
+                  )}
+                  {viewer.isPDF && (
+                    <iframe title="pdf" src={viewer.url} className="w-full h-[60vh] bg-white" />
+                  )}
+                  {viewer.isImg && (
+                    <img src={viewer.url} alt="" className="max-h-[60vh] w-full object-contain bg-white" />
+                  )}
+                  {!viewer.isText && !viewer.isPDF && !viewer.isImg && (
+                    <div className="p-4 text-sm">Preview not supported. Download or open in a new tab.</div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* -------------------- Create Pet Modal -------------------- */
+function NewPetPanel({ open, onClose, onCreate }) {
+  const [name, setName] = useState(""); const [species, setSpecies] = useState("cat");
+  const [k, setK] = useState(""); const [v, setV] = useState(""); const [extras, setExtras] = useState({});
+  const addField = () => { if (!k) return; setExtras({ ...extras, [k]: v }); setK(""); setV(""); };
+  if (!open) return null;
+  return (<div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="absolute inset-0 bg-black/40" onClick={onClose} />
+    <div className="relative rounded-3xl bg-white/95 backdrop-blur shadow-2xl border border-zinc-200 w-[500px] max-w-[95vw] p-6 text-zinc-900">
+      <div className="flex items-center justify-between mb-4">
+        <div className="text-base font-semibold">Create Pet</div>
+        <button type="button" onClick={onClose} className="text-zinc-500 hover:text-zinc-700">✕</button>
+      </div>
+      <div className="mb-4 grid grid-cols-3 gap-3">
+        <div className="col-span-2">
+          <label className="text-sm text-zinc-600">Pet name</label>
+          <input value={name} onChange={(e) => setName(e.target.value)} className="mt-1 w-full text-sm px-3 py-2 rounded border border-zinc-300 text-zinc-900 placeholder-zinc-500" placeholder="e.g., Rupert" />
+        </div>
+        <div>
+          <label className="text-sm text-zinc-600">Species</label>
+          <select value={species} onChange={(e) => setSpecies(e.target.value)} className="mt-1 w-full text-sm px-3 py-2 rounded border border-zinc-300 text-zinc-900">
+            {SPECIES.map(s => <option key={s} value={s}>{speciesAvatar(s)} {prettySpecies(s)}</option>)}
+          </select>
+        </div>
+      </div>
+      <div className="mt-2">
+        <div className="text-sm text-zinc-600 mb-1">Add field</div>
+        <div className="grid grid-cols-2 gap-2">
+          <input value={k} onChange={(e) => setK(e.target.value)} placeholder="Label" className="col-span-1 text-sm px-2 py-2 rounded border border-zinc-300 w-full text-zinc-900 placeholder-zinc-500" />
+          <input value={v} onChange={(e) => setV(e.target.value)} placeholder="Value" className="col-span-1 text-sm px-2 py-2 rounded border border-zinc-300 w-full text-zinc-900 placeholder-zinc-500" />
+        </div>
+        <div className="mt-2 flex justify-between">
+          <button type="button" onClick={addField} className="px-4 py-2 rounded bg-zinc-900 text-white text-sm">Add field</button>
+          <button type="button" onClick={() => onCreate(name, species, extras)} className="px-4 py-2 rounded bg-emerald-600 text-white text-sm">Create</button>
+        </div>
+      </div>
+    </div>
+  </div>);
+}
+
+/* -------------------- Pet Manager Panel -------------------- */
+function PetManagerPanel({ open, onClose, pets, activeId, setActiveId, renamePet, setSpecies, deletePet, movePet }) {
+  const [localNames, setLocalNames] = useState({});
+  useEffect(() => { if (open) setLocalNames(Object.fromEntries(pets.map(p => [p.id, p.name]))); }, [open, pets]);
+  if (!open) return null;
+  return (<div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="absolute inset-0 bg-black/40" onClick={onClose} />
+    <div className="relative rounded-3xl bg-white/95 backdrop-blur shadow-2xl border border-zinc-200 w-[560px] max-w-[96vw] p-6 text-zinc-900">
+      <div className="flex items-center justify-between mb-4">
+        <div className="text-base font-semibold">Manage Pets</div>
+        <button type="button" onClick={onClose} className="text-zinc-500 hover:text-zinc-700">✕</button>
+      </div>
+      <div className="space-y-2">
+        {pets.map(p => (
+          <div key={p.id} className="grid grid-cols-12 items-center gap-2 p-2 rounded-xl border border-zinc-200 bg-white/70">
+            <div className="col-span-1 text-xl">{speciesAvatar(p.species)}</div>
+            <input value={localNames[p.id] ?? p.name} onChange={(e) => setLocalNames(s => ({ ...s, [p.id]: e.target.value }))} onBlur={() => renamePet(p.id, localNames[p.id] ?? p.name)} className="col-span-5 px-3 py-2 rounded border border-zinc-300 text-zinc-900 placeholder-zinc-500" />
+            <select value={p.species} onChange={(e) => setSpecies(p.id, e.target.value)} className="col-span-3 px-2 py-2 rounded border border-zinc-300 text-zinc-900">
+              {SPECIES.map(s => <option key={s} value={s}>{speciesAvatar(s)} {prettySpecies(s)}</option>)}
+            </select>
+            <button type="button" onClick={() => setActiveId(p.id)} className={`col-span-1 px-2 py-1 rounded text-xs border ${activeId === p.id ? "bg-emerald-600 text-white border-emerald-600" : "border-zinc-300"}`}>{activeId === p.id ? "Active" : "Set"}</button>
+            <div className="col-span-1 flex items-center gap-1">
+              <button type="button" onClick={() => movePet(p.id, 'up')} className="px-2 py-1 rounded border border-zinc-300 text-xs">▲</button>
+              <button type="button" onClick={() => movePet(p.id, 'down')} className="px-2 py-1 rounded border border-zinc-300 text-xs">▼</button>
+            </div>
+            <button type="button" onClick={() => deletePet(p.id)} className="col-span-1 px-2 py-1 rounded bg-rose-600 text-white text-xs">Del</button>
+          </div>
+        ))}
+      </div>
+    </div>
+  </div>);
+}
+
+/* -------------------- Flashcards -------------------- */
+const DEFAULT_VET_DECK = [
+  { q: "Normal canine resting HR?", a: "60–120 bpm", tag: "Physio" },
+  { q: "Cat core vaccine trio?", a: "FVRCP", tag: "Vaccines" },
+  { q: "Pre-renal azotemia cause?", a: "↓ renal perfusion", tag: "Renal" },
+  { q: "Parvovirus key lab?", a: "Leukopenia (neutropenia)", tag: "Infectious" },
+  { q: "Ivermectin targets?", a: "Nematodes & ectoparasites", tag: "Pharm" },
+  { q: "Equine colic first steps?", a: "Analgesia, NG decompression, fluids", tag: "Equine" },
+];
+function FlashcardGame({ open, onClose, deck, setDeck, onComplete, pet }) {
+  const [shuffled, setShuffled] = useState([]); const [idx, setIdx] = useState(0);
+  const [showAns, setShowAns] = useState(false); const [correct, setCorrect] = useState(0);
+  const [q, setQ] = useState(""); const [a, setA] = useState(""); const [tag, setTag] = useState("");
+  const [showNotes, setShowNotes] = useState(false);
+
+  useEffect(() => { if (open) { const order = [...deck].sort(() => Math.random() - 0.5); setShuffled(order); setIdx(0); setShowAns(false); setCorrect(0); } }, [open, deck]);
+  if (!open) return null;
+  const total = shuffled.length || 0; const card = shuffled[idx];
+  const mark = isCorrect => { if (isCorrect) setCorrect(c => c + 1); if (idx + 1 < total) { setIdx(idx + 1); setShowAns(false); } else { onComplete?.({ correct: isCorrect ? correct + 1 : correct, total }); onClose(); } };
+  const addCard = () => { if (!q || !a) return; setDeck([...deck, { q, a, tag }]); setQ(""); setA(""); setTag(""); };
+  return (<div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+    <div className="relative w-[680px] max-w-[96vw] rounded-3xl bg-white text-zinc-900 p-6 shadow-2xl border border-zinc-200">
+      <div className="flex items-center justify-between mb-3">
+        <div className="text-base font-semibold">Flashcards · Vet Study</div>
+        <div className="flex items-center gap-2">
+          <button type="button" className="px-3 py-2 rounded bg-indigo-100 text-indigo-700 text-sm" onClick={() => setShowNotes(true)}>📓 Notes</button>
+          <button type="button" onClick={onClose} className="text-zinc-500 hover:text-zinc-700">✕</button>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-zinc-200 p-4 bg-white/80">
+        {total === 0 ? <div className="text-sm text-zinc-600">No cards yet. Add a few below to start.</div> :
+          <>
+            <div className="flex items-center justify-between mb-2 text-sm text-zinc-600"><div>Card {idx + 1} / {total}</div><div>Correct: {correct}</div></div>
+            <div className="rounded-xl bg-zinc-50 border border-zinc-200 p-5 min-h-[132px]">
+              <div className="text-xs uppercase tracking-wide text-zinc-500">{card?.tag || "Card"}</div>
+              <div className="mt-2 text-lg font-medium">{card?.q}</div>
+              {showAns && <div className="mt-3 text-base text-emerald-700">{card?.a}</div>}
+            </div>
+            <div className="mt-3 flex gap-2">{!showAns ?
+              <button type="button" onClick={() => setShowAns(true)} className="px-4 py-2 rounded bg-zinc-900 text-white text-sm">Show answer</button> :
+              <><button type="button" onClick={() => mark(false)} className="px-4 py-2 rounded border border-zinc-300 text-sm">Again</button><button type="button" onClick={() => mark(true)} className="px-4 py-2 rounded bg-emerald-600 text-white text-sm">Correct</button></>}
+            </div>
+          </>
+        }
+      </div>
+      <div className="mt-5">
+        <div className="text-sm text-zinc-600 mb-2">Add a card</div>
+        <div className="grid grid-cols-3 gap-2">
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Question" className="col-span-3 md:col-span-2 px-3 py-2 rounded border border-zinc-300 text-zinc-900 placeholder-zinc-500" />
+          <input value={tag} onChange={(e) => setTag(e.target.value)} placeholder="Tag (optional)" className="col-span-3 md:col-span-1 px-3 py-2 rounded border border-zinc-300 text-zinc-900 placeholder-zinc-500" />
+          <input value={a} onChange={(e) => setA(e.target.value)} placeholder="Answer" className="col-span-3 px-3 py-2 rounded border border-zinc-300 text-zinc-900 placeholder-zinc-500" />
+        </div>
+        <div className="mt-2 flex justify-end"><button type="button" onClick={addCard} className="px-4 py-2 rounded bg-zinc-900 text-white text-sm">Add Card</button></div>
+      </div>
+
+      {/* Inline Notes panel so learners can peek notes without leaving the game */}
+      <NotesPanel open={showNotes} onClose={() => setShowNotes(false)} pet={pet} />
+    </div>
+  </div>);
+}
+
+/* -------------------- Main -------------------- */
+export default function VSCatPetApp() {
+  const wrapRef = useRef(null);
+
+  // Pet size/placement
+  const PET_SCALE = 5.0; const PET_BASE = { w: 56, h: 40 }; const PET_W = PET_BASE.w * PET_SCALE; const PET_H = PET_BASE.h * PET_SCALE;
+
+  // Background hotspot → opens Memories (over the screen)
+  const MEM_HOTSPOT = { cx: 73, cy: 55, w: 10, h: 20, debug: false };
+  const NOTES_HOTSPOT = { cx: 60, cy: 60, w: 10, h: 20, debug: false };
+  const GOAL_HOTSPOT = { cx: 30, cy: 40, w: 10, h: 20, debug: false };
+  const FLASH_HOTSPOT = { cx: 48, cy: 35, w: 10, h: 20, debug: false };
+
+
+
+  // Motion constants
+  const SPEED_IDLE = 42, SPEED_CHASE = 90, EDGE_PADDING = 12, PX_PER_KM = 80000;
+
+  // Motion state
+  const [pos, setPos] = useState({ x: 80, y: 80 });
+  const [target, setTarget] = useState(null);
+  const [facingLeft, setFacingLeft] = useState(false);
+  const [bob, setBob] = useState(false);
+  const [showHeart, setShowHeart] = useState(false);
+  const [ball, setBall] = useState(null);
+  const roamTimer = useRef(0);
+  // NEW: global Notes panel state
+  const [showNotes, setShowNotes] = useState(false);
+  // Flashcards modal flag
+ 
+
+  // Persistent pets (with migration)
+  const [pets, setPets] = useLocalStorage("pets.list", (() => { try { const old = JSON.parse(localStorage.getItem("pet.meta") || "null"); const extra = JSON.parse(localStorage.getItem("pet.extra") || "{}"); if (old) { return [{ id: String(Date.now()), species: old.species || "cat", avatar: "🐱", name: old.name || "Rupert", createdAt: old.createdAt ?? Date.now(), hearts: old.hearts ?? 0, energy: old.energy ?? 0, memDate: old.memDate || todayStr(), memCorrect: old.memCorrect ?? 0, memTotal: old.memTotal ?? 0, weight: old.weight ?? 1.0, distanceKm: old.distanceKm ?? 0, goals: old.goals ?? [], extra: extra || {} }]; } } catch { } return [{ id: String(Date.now()), name: "Rupert", species: "cat", avatar: "🐱", createdAt: Date.now(), hearts: 0, energy: 0, memDate: todayStr(), memCorrect: 0, memTotal: 0, weight: 1.0, distanceKm: 0, goals: [], extra: {} }]; })());
+  const [activeId, setActiveId] = useLocalStorage("pets.activeId", pets[0]?.id);
+
+  const activeIndex = Math.max(0, pets.findIndex(p => p.id === activeId));
+  const pet = pets[activeIndex] || pets[0];
+  const setPet = (next) => { setPets(list => { const copy = [...list]; copy[activeIndex] = typeof next === "function" ? next(copy[activeIndex]) : next; return copy; }); };
+  const [extra, setExtra] = [pet?.extra || {}, (ex) => setPet({ ...pet, extra: ex })];
+
+  // UI flags
+  const [showInfo, setShowInfo] = useState(false);
+  const [showNewPet, setShowNewPet] = useState(false);
+  const [showManager, setShowManager] = useState(false);
+  const [showGoals, setShowGoals] = useState(false);
+  const [showMemories, setShowMemories] = useState(false);
+
+  // Flashcards
+  const [deck, setDeck] = useLocalStorage("flashcards.deck", DEFAULT_VET_DECK);
+  const [showGame, setShowGame] = useState(false);
+
+  // Place pet at center-bottom initially
+  const placePetCenterBottom = () => { const r = wrapRef.current?.getBoundingClientRect(); if (!r) return; setPos({ x: r.width / 2, y: r.height - EDGE_PADDING - PET_H / 2 }); };
+  useEffect(() => { placePetCenterBottom(); }, []);
+
+  // Motion loop
+  useEffect(() => { let raf = 0; let last = performance.now(); const loop = (t) => { const dt = (t - last) / 1000; last = t; setBob(b => !b); setPos(p => { const b = wrapRef.current?.getBoundingClientRect(); if (!b) return p; let tgt = target; let speed = SPEED_IDLE; roamTimer.current -= dt; if (!tgt) { if (roamTimer.current <= 0) { tgt = { x: rand(b.left + EDGE_PADDING, b.right - EDGE_PADDING), y: rand(b.top + EDGE_PADDING, b.bottom - EDGE_PADDING) }; roamTimer.current = rand(2, 4); } } else { speed = SPEED_CHASE; } const local = { x: p.x, y: p.y }; const lt = tgt ? { x: tgt.x - b.left, y: tgt.y - b.top } : local; const next = stepToward(local, lt, speed, dt); const nx = clamp(next.x, EDGE_PADDING, b.width - EDGE_PADDING); const ny = clamp(next.y, EDGE_PADDING, b.height - EDGE_PADDING); setFacingLeft(nx < p.x ? true : nx > p.x ? false : facingLeft); const dPx = Math.hypot(nx - p.x, ny - p.y); if (dPx > 0) setPet(pm => ({ ...pm, distanceKm: (pm.distanceKm || 0) + dPx / PX_PER_KM })); if (tgt && Math.hypot(lt.x - nx, lt.y - ny) < 8) { setTarget(null); setBall(bal => bal ? { ...bal, ttl: 0.3 } : bal); setShowHeart(true); setTimeout(() => setShowHeart(false), 400); } return { x: nx, y: ny }; }); setBall(bal => bal ? { ...bal, ttl: Math.max(0, (bal.ttl ?? 1) - dt) } : bal); raf = requestAnimationFrame(loop); }; raf = requestAnimationFrame(loop); return () => cancelAnimationFrame(raf); }, [target, facingLeft, setPet]);
+
+  function onClick(e) { const rect = wrapRef.current.getBoundingClientRect(); const x = e.clientX - rect.left; const y = e.clientY - rect.top; setTarget({ x: e.clientX, y: e.clientY }); setBall({ x, y, ttl: 1 }); }
+
+  // Flashcards completion -> daily memorize progress
+  const handleGameComplete = ({ correct, total }) => {
+    const today = todayStr();
+    setPet(p => {
+      const same = p.memDate === today;
+      const nc = (same ? p.memCorrect : 0) + (correct || 0);
+      const nt = (same ? p.memTotal : 0) + (total || 0);
+      return { ...p, memDate: today, memCorrect: nc, memTotal: nt, energy: nt ? Math.round((nc / nt) * 100) : 0 };
+    });
+  };
+
+  // CRUD helpers
+  const createPet = (name, species, extras) => { const now = Date.now(); const id = String(now); const newPet = { id, name: name || "Unnamed", species, avatar: speciesAvatar(species), createdAt: now, hearts: 0, energy: 0, memDate: todayStr(), memCorrect: 0, memTotal: 0, weight: 1.0, distanceKm: 0, goals: [], extra: extras || {} }; setPets(list => [...list, newPet]); setActiveId(id); setShowNewPet(false); setShowInfo(true); placePetCenterBottom(); };
+  const renamePet = (id, name) => setPets(list => list.map(p => p.id === id ? { ...p, name } : p));
+  const setSpeciesFn = (id, species) => setPets(list => list.map(p => p.id === id ? { ...p, species, avatar: speciesAvatar(species) } : p));
+  const deletePet = (id) => setPets(list => { const next = list.filter(p => p.id !== id); if (next.length === 0) return list; if (activeId === id) setActiveId(next[0].id); return next; });
+  const movePet = (id, dir) => setPets(list => { const i = list.findIndex(p => p.id === id); if (i < 0) return list; const ni = clamp(i + (dir === "up" ? -1 : 1), 0, list.length - 1); if (ni === i) return list; const copy = [...list]; const [it] = copy.splice(i, 1); copy.splice(ni, 0, it); return copy; });
+
+  return (
+    <div className="min-h-screen w-full text-zinc-100 bg-zinc-900">
+      <TopBar
+        onToggleInfo={() => setShowInfo(s => !s)}
+        onNewPet={() => setShowNewPet(true)}
+        pets={pets}
+        activeId={activeId}
+        onSwitch={(id) => setActiveId(id)}
+        onManage={() => setShowManager(true)}
+      />
+
+      {/* Play area */}
+      <div
+        ref={wrapRef}
+        onClick={onClick}
+        className="relative w-full h-[200px] md:h-[690px] overflow-hidden bg-cover bg-no-repeat"
+        style={{ cursor: "crosshair", backgroundImage: "url('/pet_BG.jpg')", backgroundPosition: "center 35%" }}
+        aria-label="pet playground"
+      >
+        <div className="absolute inset-0 bg-black/25" />
+        {/* Labels (visual only; no click handlers) */}
+<HotspotLabel cfg={MEM_HOTSPOT}   text="Memories"   />
+<HotspotLabel cfg={NOTES_HOTSPOT} text="Notes"      />
+<HotspotLabel cfg={GOAL_HOTSPOT}  text="Goals"      />
+<HotspotLabel cfg={FLASH_HOTSPOT} text="Flashcards" />
+
+
+        {/* 🔒 STEALTH HOTSPOT — opens Memories */}
+        <button
+          type="button"
+          aria-label="Open Memories"
+          title="Memories"
+          onClick={(e) => { e.stopPropagation(); setShowMemories(true); }}
+          className={`absolute outline-none ${MEM_HOTSPOT.debug ? "bg-emerald-500/20 border border-emerald-400" : "bg-transparent"} focus-visible:ring-2 focus-visible:ring-indigo-400 rounded-xl`}
+          style={{
+            left: `${MEM_HOTSPOT.cx}%`,
+            top: `${MEM_HOTSPOT.cy}%`,
+            width: `${MEM_HOTSPOT.w}%`,
+            height: `${MEM_HOTSPOT.h}%`,
+            minWidth: "180px",
+            minHeight: "120px",
+            transform: "translate(-50%, -50%)",
+            cursor: "pointer",
+            zIndex: 5,
+          }}
+        />
+
+        {/* 🔒 HOTSPOT — opens Notes */}
+        <button
+          type="button"
+          aria-label="Open Notes"
+          title="Notes"
+          onClick={(e) => { e.stopPropagation(); setShowNotes(true); }}
+          className={`absolute outline-none ${NOTES_HOTSPOT.debug ? "bg-sky-500/20 border border-sky-400" : "bg-transparent"} focus-visible:ring-2 focus-visible:ring-indigo-400 rounded-xl`}
+          style={{
+            left: `${NOTES_HOTSPOT.cx}%`,
+            top: `${NOTES_HOTSPOT.cy}%`,
+            width: `${NOTES_HOTSPOT.w}%`,
+            height: `${NOTES_HOTSPOT.h}%`,
+            minWidth: "160px",
+            minHeight: "110px",
+            transform: "translate(-50%, -50%)",
+            cursor: "pointer",
+            zIndex: 5,
+          }}
+        />
+        {/* 🔒 HOTSPOT — opens Goals */}
+        <button
+          type="button"
+          aria-label="Open Goals"
+          title="Goals"
+          onClick={(e) => { e.stopPropagation(); setShowGoals(true); }}
+          className={`absolute outline-none ${GOAL_HOTSPOT.debug ? "bg-emerald-500/20 border border-emerald-400" : "bg-transparent"} focus-visible:ring-2 focus-visible:ring-indigo-400 rounded-xl`}
+          style={{
+            left: `${GOAL_HOTSPOT.cx}%`,
+            top: `${GOAL_HOTSPOT.cy}%`,
+            width: `${GOAL_HOTSPOT.w}%`,
+            height: `${GOAL_HOTSPOT.h}%`,
+            minWidth: "180px",
+            minHeight: "120px",
+            transform: "translate(-50%, -50%)",
+            cursor: "pointer",
+            zIndex: 5,
+          }}
+        />
+{/* 🔒 HOTSPOT — opens Flashcard */}
+<button
+  type="button"
+  aria-label="Open Flashcard"
+  title="Flashcard"
+  onClick={(e) => { e.stopPropagation(); setShowGame(true); }}
+  className={`absolute outline-none ${FLASH_HOTSPOT.debug ? "bg-purple-500/20 border border-purple-400" : "bg-transparent"} focus-visible:ring-2 focus-visible:ring-indigo-400 rounded-xl`}
+  style={{
+    left: `${FLASH_HOTSPOT.cx}%`,
+    top: `${FLASH_HOTSPOT.cy}%`,
+    width: `${FLASH_HOTSPOT.w}%`,
+    height: `${FLASH_HOTSPOT.h}%`,
+    minWidth: "160px",
+    minHeight: "110px",
+    transform: "translate(-50%, -50%)",
+    cursor: "pointer",
+    zIndex: 5,
+  }}
+/>
+
+        {/* ball */}
+        {ball && ball.ttl > 0 && (
+          <div className="absolute w-3 h-3 rounded-full" style={{ left: ball.x - 6, top: ball.y - 6, opacity: ball.ttl, background: "#f59e0b" }} />
+        )}
+
+        {/* pet sprite */}
+        <div className="absolute" style={{ left: pos.x - PET_W / 2, top: pos.y - PET_H / 2, width: PET_W, height: PET_H }} role="img" aria-label={`${pet.species} pet`}>
+          <div style={{ transform: `scale(${PET_SCALE})`, transformOrigin: "top left" }}>
+            <PetSVG species={pet.species} facingLeft={facingLeft} bob={bob} />
+          </div>
+          {showHeart && <div className="absolute -top-3 left-1/2 -translate-x-1/2 text-pink-400 text-xl select-none">❤</div>}
+        </div>
+
+        {/* hint */}
+        <div className="absolute bottom-3 right-3 text-xs text-amber-200 bg-black/40 px-3 py-1.5 rounded-full backdrop-blur">
+          Click to throw a ball · Hover to pet · ℹ️ for details
+        </div>
+      </div>
+      
+
+      {/* Modals */}
+      <InfoPanel
+        open={showInfo}
+        onClose={() => setShowInfo(false)}
+        pet={pet}
+        setPet={setPet}
+        extra={extra}
+        setExtra={setExtra}
+        onOpenGoals={() => setShowGoals(true)}
+        onOpenMemories={() => setShowMemories(true)}
+        onPlay={() => setShowGame(true)}
+      />
+      <NewPetPanel open={showNewPet} onClose={() => setShowNewPet(false)} onCreate={createPet} />
+      <PetManagerPanel open={showManager} onClose={() => setShowManager(false)} pets={pets} activeId={activeId} setActiveId={setActiveId} renamePet={renamePet} setSpecies={setSpeciesFn} deletePet={deletePet} movePet={movePet} />
+      <GoalsPanel open={showGoals} onClose={() => setShowGoals(false)} pet={pet} setPet={setPet} />
+      <MemoriesPanel open={showMemories} onClose={() => setShowMemories(false)} pet={pet} />
+      <FlashcardGame open={showGame} onClose={() => setShowGame(false)} deck={deck} setDeck={setDeck} onComplete={handleGameComplete} pet={pet} />
+      <NotesPanel
+        open={showNotes}
+        onClose={() => setShowNotes(false)}
+        pet={pet}
+      />
+    </div>
+  );
+}
